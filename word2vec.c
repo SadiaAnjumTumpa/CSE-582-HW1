@@ -247,7 +247,7 @@ void CreateBinaryTree() {
   for (a = 0; a < vocab_size; a++) count[a] = vocab[a].cn;
   for (a = vocab_size; a < vocab_size * 2; a++) count[a] = 1e15;
   
-  // `pos1` and `pos2` are indices into the `count` array.
+  // 'pos1' and 'pos2' are indices into the 'count' array.
   pos1 = vocab_size - 1;
   pos2 = vocab_size;
   
@@ -621,7 +621,7 @@ void *TrainModelThread(void *id) {
           
           if (last_word == -1) continue; // Check if the word exists in vocabulary
           
-          // Adding the gradient in the vector `neu1e` to the word vector for
+          // Adding the gradient in the vector 'neu1e' to the word vector for
           // the current context word.
           for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];
         }
