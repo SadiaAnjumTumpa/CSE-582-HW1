@@ -28,45 +28,78 @@
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
 
+// 'vocab_hash_size' represents size of the hash table for vocabulary
 const int vocab_hash_size = 30000000;  // Maximum 30 * 0.7 = 21M words in the vocabulary
 
 typedef float real;                    // Precision of float numbers
 
 struct vocab_word {
-  long long cn;
+  long long cn; // word frequency
   int *point;
   char *word, *code, codelen;
 };
 
 char train_file[MAX_STRING], output_file[MAX_STRING];
 char save_vocab_file[MAX_STRING], read_vocab_file[MAX_STRING];
-struct vocab_word *vocab;
+struct vocab_word *vocab; // 'vocab' holds all of the words in vocabulary
 int binary = 0, cbow = 1, debug_mode = 2, window = 5, min_count = 5, num_threads = 12, min_reduce = 1;
-int *vocab_hash;
+int *vocab_hash; // Hash table for the vocabulary
+
+/* 'vocab_max_size': Chunk size for allacating vocabulary table
+   'vocab_size' : Number of unique words in vocabulary
+   'layer1_size' : #features in word vectors, #neurons in hidden layer
+*/
 long long vocab_max_size = 1000, vocab_size = 0, layer1_size = 100;
 long long train_words = 0, word_count_actual = 0, iter = 5, file_size = 0, classes = 0;
+
+/* 'alpha' : learning rate
+   'starting_alpha' : Initial learning  rate
+   'sample' : subsampling factor
+ */
 real alpha = 0.025, starting_alpha, sample = 1e-3;
+
+/* 'syn0' : Hidden layer weights 
+   'syn1' : Output layer weights ( for using heirarchical softmax)
+   'syn1neg' : Output layer weights ( for using negative sampling)
+   'expTable' : Precalcultaed activations for the output layer
+*/
 real *syn0, *syn1, *syn1neg, *expTable;
 clock_t start;
 
 int hs = 0, negative = 5;
 const int table_size = 1e8;
 int *table;
-
+// Implements unigram table for Negative Sampling
 void InitUnigramTable() {
   int a, i;
   double train_words_pow = 0;
   double d1, power = 0.75;
+  
+  // Table allocation
   table = (int *)malloc(table_size * sizeof(int));
+  
+  // Calculate the sum of weights for all words
   for (a = 0; a < vocab_size; a++) train_words_pow += pow(vocab[a].cn, power);
   i = 0;
+  
+  // Calculate the probability that word 'i' is chosen (0~1)
   d1 = pow(vocab[i].cn, power) / train_words_pow;
+  
+  
   for (a = 0; a < table_size; a++) {
     table[a] = i;
+    
+    /* Move to next word 
+    if filled table proportion> probability of choosing this word
+    */
     if (a / (double)table_size > d1) {
-      i++;
+      i++;// Next word
+      
+      // Accumulate the probability that word 'i' is chosen
       d1 += pow(vocab[i].cn, power) / train_words_pow;
     }
+    
+    // Checking for valid vocab
     if (i >= vocab_size) i = vocab_size - 1;
   }
 }
@@ -74,27 +107,33 @@ void InitUnigramTable() {
 // Reads a single word from a file, assuming space + tab + EOL to be word boundaries
 void ReadWord(char *word, FILE *fin) {
   int a = 0, ch;
+  
+  // Read until the end of the word or the EOF
   while (!feof(fin)) {
-    ch = fgetc(fin);
-    if (ch == 13) continue;
+    ch = fgetc(fin); // Next character
+    if (ch == 13) continue; // If carriage return, then continue.
     if ((ch == ' ') || (ch == '\t') || (ch == '\n')) {
+      
+      // Check if the word has at least one character
       if (a > 0) {
         if (ch == '\n') ungetc(ch, fin);
         break;
       }
+      
+      // Finding the end of a "sentence" and mark it with the token </s>
       if (ch == '\n') {
         strcpy(word, (char *)"</s>");
         return;
       } else continue;
     }
-    word[a] = ch;
+    word[a] = ch;// Add word
     a++;
     if (a >= MAX_STRING - 1) a--;   // Truncate too long words
   }
-  word[a] = 0;
+  word[a] = 0; // String terminating with Null
 }
 
-// Returns hash value of a word
+// Returns hash value (integer between 0 and 'vocab_hash_size' ) of a word
 int GetWordHash(char *word) {
   unsigned long long a, hash = 0;
   for (a = 0; a < strlen(word); a++) hash = hash * 257 + word[a];
@@ -104,7 +143,7 @@ int GetWordHash(char *word) {
 
 // Returns position of a word in the vocabulary; if the word is not found, returns -1
 int SearchVocab(char *word) {
-  unsigned int hash = GetWordHash(word);
+  unsigned int hash = GetWordHash(word); // Compute hash value for a word
   while (1) {
     if (vocab_hash[hash] == -1) return -1;
     if (!strcmp(word, vocab[vocab_hash[hash]].word)) return vocab_hash[hash];
@@ -124,18 +163,19 @@ int ReadWordIndex(FILE *fin) {
 // Adds a word to the vocabulary
 int AddWordToVocab(char *word) {
   unsigned int hash, length = strlen(word) + 1;
-  if (length > MAX_STRING) length = MAX_STRING;
+  if (length > MAX_STRING) length = MAX_STRING; // Limit string length
   vocab[vocab_size].word = (char *)calloc(length, sizeof(char));
   strcpy(vocab[vocab_size].word, word);
-  vocab[vocab_size].cn = 0;
-  vocab_size++;
+  vocab[vocab_size].cn = 0;// Initialize word frequency to 0
+  vocab_size++;// Increment vocabulary size
+  
   // Reallocate memory if needed
   if (vocab_size + 2 >= vocab_max_size) {
     vocab_max_size += 1000;
     vocab = (struct vocab_word *)realloc(vocab, vocab_max_size * sizeof(struct vocab_word));
   }
-  hash = GetWordHash(word);
-  while (vocab_hash[hash] != -1) hash = (hash + 1) % vocab_hash_size;
+  hash = GetWordHash(word); // Compute hash value for the word
+  while (vocab_hash[hash] != -1) hash = (hash + 1) % vocab_hash_size; // Find next empty spot
   vocab_hash[hash] = vocab_size - 1;
   return vocab_size - 1;
 }
@@ -206,11 +246,16 @@ void CreateBinaryTree() {
   long long *parent_node = (long long *)calloc(vocab_size * 2 + 1, sizeof(long long));
   for (a = 0; a < vocab_size; a++) count[a] = vocab[a].cn;
   for (a = vocab_size; a < vocab_size * 2; a++) count[a] = 1e15;
+  
+  // `pos1` and `pos2` are indices into the `count` array.
   pos1 = vocab_size - 1;
   pos2 = vocab_size;
+  
+  
   // Following algorithm constructs the Huffman tree by adding one node at a time
   for (a = 0; a < vocab_size - 1; a++) {
     // First, find two smallest nodes 'min1, min2'
+    // Find min1 (at index 'min1i')
     if (pos1 >= 0) {
       if (count[pos1] < count[pos2]) {
         min1i = pos1;
@@ -223,6 +268,8 @@ void CreateBinaryTree() {
       min1i = pos2;
       pos2++;
     }
+    
+    // Find min2 (at index 'min2i')
     if (pos1 >= 0) {
       if (count[pos1] < count[pos2]) {
         min2i = pos1;
@@ -235,26 +282,28 @@ void CreateBinaryTree() {
       min2i = pos2;
       pos2++;
     }
-    count[vocab_size + a] = count[min1i] + count[min2i];
-    parent_node[min1i] = vocab_size + a;
+    count[vocab_size + a] = count[min1i] + count[min2i];// Combined weight calculation
+    
+    // Backtracking path storing
+    parent_node[min1i] = vocab_size + a; 
     parent_node[min2i] = vocab_size + a;
     binary[min2i] = 1;
   }
   // Now assign binary code to each vocabulary word
   for (a = 0; a < vocab_size; a++) {
     b = a;
-    i = 0;
+    i = 0;// Code length
     while (1) {
       code[i] = binary[b];
       point[i] = b;
-      i++;
+      i++;// Increment code length
       b = parent_node[b];
-      if (b == vocab_size * 2 - 2) break;
+      if (b == vocab_size * 2 - 2) break; // When reached root, break
     }
-    vocab[a].codelen = i;
+    vocab[a].codelen = i; // Record code length
     vocab[a].point[0] = vocab_size - 2;
     for (b = 0; b < i; b++) {
-      vocab[a].code[i - b - 1] = code[b];
+      vocab[a].code[i - b - 1] = code[b]; // Reverse the code
       vocab[a].point[i - b] = point[b] - vocab_size;
     }
   }
@@ -263,24 +312,28 @@ void CreateBinaryTree() {
   free(parent_node);
 }
 
+
+/* Builds a vocabulary from the words found in the training file,
+Words that occur fewer than 'min_count' times will be discarded from
+vocabulary*/
 void LearnVocabFromTrainFile() {
   char word[MAX_STRING];
   FILE *fin;
   long long a, i;
-  for (a = 0; a < vocab_hash_size; a++) vocab_hash[a] = -1;
+  for (a = 0; a < vocab_hash_size; a++) vocab_hash[a] = -1; // Initialization
   fin = fopen(train_file, "rb");
   if (fin == NULL) {
     printf("ERROR: training data file not found!\n");
     exit(1);
   }
   vocab_size = 0;
-  AddWordToVocab((char *)"</s>");
+  AddWordToVocab((char *)"</s>");// Marks the end of a sentence
   while (1) {
-    ReadWord(word, fin);
-    if (feof(fin)) break;
+    ReadWord(word, fin); // Read the next word from the file
+    if (feof(fin)) break; // Breaks if EOF is reached
     train_words++;
     if ((debug_mode > 1) && (train_words % 100000 == 0)) {
-      printf("%lldK%c", train_words / 1000, 13);
+      printf("%lldK%c", train_words / 1000, 13);// Print progress
       fflush(stdout);
     }
     i = SearchVocab(word);
@@ -290,7 +343,9 @@ void LearnVocabFromTrainFile() {
     } else vocab[i].cn++;
     if (vocab_size > vocab_hash_size * 0.7) ReduceVocab();
   }
-  SortVocab();
+  SortVocab(); // Sort the vocabulary in descending order by number of word occurrences
+  
+  // Print stats
   if (debug_mode > 0) {
     printf("Vocab size: %lld\n", vocab_size);
     printf("Words in train file: %lld\n", train_words);
@@ -342,20 +397,33 @@ void ReadVocab() {
 void InitNet() {
   long long a, b;
   unsigned long long next_random = 1;
+  
+  // Allocate the hidden layer of the network
   a = posix_memalign((void **)&syn0, 128, (long long)vocab_size * layer1_size * sizeof(real));
   if (syn0 == NULL) {printf("Memory allocation failed\n"); exit(1);}
+  
+  // For Hierarchical Softmax for training
   if (hs) {
+ 
     a = posix_memalign((void **)&syn1, 128, (long long)vocab_size * layer1_size * sizeof(real));
     if (syn1 == NULL) {printf("Memory allocation failed\n"); exit(1);}
     for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
      syn1[a * layer1_size + b] = 0;
   }
+  
+  // For negative sampling for training
   if (negative>0) {
+    
+    // Allocate the output layer of the network
     a = posix_memalign((void **)&syn1neg, 128, (long long)vocab_size * layer1_size * sizeof(real));
     if (syn1neg == NULL) {printf("Memory allocation failed\n"); exit(1);}
+    
+    // Initializes the weights in the output layer to 0
     for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++)
      syn1neg[a * layer1_size + b] = 0;
   }
+  
+  // Random weight initialization
   for (a = 0; a < vocab_size; a++) for (b = 0; b < layer1_size; b++) {
     next_random = next_random * (unsigned long long)25214903917 + 11;
     syn0[a * layer1_size + b] = (((next_random & 0xFFFF) / (real)65536) - 0.5) / layer1_size;
@@ -370,11 +438,18 @@ void *TrainModelThread(void *id) {
   unsigned long long next_random = (long long)id;
   real f, g;
   clock_t now;
+  
+  // neu1 is only used in CBOW, neu1e is used in both CBOW and Skip-gram
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
-  FILE *fi = fopen(train_file, "rb");
+  
+  FILE *fi = fopen(train_file, "rb");// Opening file 
   fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
+  
+  // TRAINING LOOP
   while (1) {
+    
+    // Prints pogress updates and learning rate updation occurs
     if (word_count - last_word_count > 10000) {
       word_count_actual += word_count - last_word_count;
       last_word_count = word_count;
@@ -385,25 +460,35 @@ void *TrainModelThread(void *id) {
          word_count_actual / ((real)(now - start + 1) / (real)CLOCKS_PER_SEC * 1000));
         fflush(stdout);
       }
+      
+      // Updates learning rate, gradually decreases
       alpha = starting_alpha * (1 - word_count_actual / (real)(iter * train_words + 1));
+      
+      // Setting lower boung of learning rate
       if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
     }
     if (sentence_length == 0) {
       while (1) {
-        word = ReadWordIndex(fi);
+        word = ReadWordIndex(fi); // Read the next word from the training data and its index in the vocab table
         if (feof(fi)) break;
-        if (word == -1) continue;
-        word_count++;
-        if (word == 0) break;
+        if (word == -1) continue; // Skip if the word is not found
+        word_count++; // Count total number of processed training words
+        if (word == 0) break; // End of a sentence reached 
+        
         // The subsampling randomly discards frequent words while keeping the ranking same
         if (sample > 0) {
+          
+          // Calculate the probability that we want to keep the word
           real ran = (sqrt(vocab[word].cn / (sample * train_words)) + 1) * (sample * train_words) / vocab[word].cn;
           next_random = next_random * (unsigned long long)25214903917 + 11;
+          
+          // If the probability < random fraction : discard the word
           if (ran < (next_random & 0xFFFF) / (real)65536) continue;
         }
-        sen[sentence_length] = word;
-        sentence_length++;
-        if (sentence_length >= MAX_SENTENCE_LENGTH) break;
+        
+        sen[sentence_length] = word;// Add the word to sentence
+        sentence_length++; // Track sentence length
+        if (sentence_length >= MAX_SENTENCE_LENGTH) break; // Check for maximum sentence length
       }
       sentence_position = 0;
     }
@@ -417,7 +502,7 @@ void *TrainModelThread(void *id) {
       fseek(fi, file_size / (long long)num_threads * (long long)id, SEEK_SET);
       continue;
     }
-    word = sen[sentence_position];
+    word = sen[sentence_position];// Get the next word in the sentence
     if (word == -1) continue;
     for (c = 0; c < layer1_size; c++) neu1[c] = 0;
     for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
@@ -429,14 +514,8 @@ void *TrainModelThread(void *id) {
     b = next_random % window;
 
 
-    if (cbow) {  //train the cbow architecture
-    // How does CBOW compose context embeddings?
-    // How does it compute word probability given context?
-    // How does it implement negative sampling?
-    // Any other parameters apart from the word embeddings and context embeddings?
-    // What input format does Word2Vec require?
-      
-      
+    if (cbow) { //train the CBOW ARCHITECTURE
+   
       // in -> hidden
       cw = 0;
 
@@ -547,7 +626,7 @@ void *TrainModelThread(void *id) {
           for (c = 0; c < layer1_size; c++) syn0[c + last_word * layer1_size] += neu1e[c];
         }
       }
-    } else {  //train skip-gram
+    } else {  //train SKIP-GRAM
       for (a = b; a < window * 2 + 1 - b; a++) if (a != window) {
         c = sentence_position - window + a;
         if (c < 0) continue;
@@ -556,6 +635,7 @@ void *TrainModelThread(void *id) {
         if (last_word == -1) continue;
         l1 = last_word * layer1_size;
         for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
+        
         // HIERARCHICAL SOFTMAX
         if (hs) for (d = 0; d < vocab[word].codelen; d++) {
           f = 0;
@@ -572,7 +652,7 @@ void *TrainModelThread(void *id) {
           // Learn weights hidden -> output
           for (c = 0; c < layer1_size; c++) syn1[c + l2] += g * syn0[c + l1];
         }
-        // NEGATIVE SAMPLING
+        // NEGATIVE SAMPLING (Same as previously described)
         if (negative > 0) for (d = 0; d < negative + 1; d++) {
           if (d == 0) {
             target = word;
@@ -597,7 +677,9 @@ void *TrainModelThread(void *id) {
         for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
       }
     }
-    sentence_position++;
+    sentence_position++; // Next word in the sentence
+    
+    // Check for end of a sentence, start a new sentence
     if (sentence_position >= sentence_length) {
       sentence_length = 0;
       continue;
@@ -609,20 +691,24 @@ void *TrainModelThread(void *id) {
   pthread_exit(NULL);
 }
 
+// Training Process
 void TrainModel() {
   long a, b, c, d;
   FILE *fo;
   pthread_t *pt = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
   printf("Starting training using file %s\n", train_file);
   starting_alpha = alpha;
-  if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile();
-  if (save_vocab_file[0] != 0) SaveVocab();
+  if (read_vocab_file[0] != 0) ReadVocab(); else LearnVocabFromTrainFile(); // Load a pre-existing vocabulary, or learn the vocabulary from the training file
+  if (save_vocab_file[0] != 0) SaveVocab(); // Save the vocabulary.
   if (output_file[0] == 0) return;
-  InitNet();
-  if (negative > 0) InitUnigramTable();
-  start = clock();
+  InitNet();// Initialization of the network
+  if (negative > 0) InitUnigramTable(); // Negative sampling
+  start = clock(); // Record the time of starting the process
+  
+  // Training
   for (a = 0; a < num_threads; a++) pthread_create(&pt[a], NULL, TrainModelThread, (void *)a);
   for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
+  
   fo = fopen(output_file, "wb");
   if (classes == 0) {
     // Save the word vectors
@@ -758,7 +844,11 @@ int main(int argc, char **argv) {
   if ((i = ArgPos((char *)"-iter", argc, argv)) > 0) iter = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-min-count", argc, argv)) > 0) min_count = atoi(argv[i + 1]);
   if ((i = ArgPos((char *)"-classes", argc, argv)) > 0) classes = atoi(argv[i + 1]);
+  
+  // The vocabulary table allocation
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
+  
+  //Mapping word strings to word entries using hash table
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
   for (i = 0; i < EXP_TABLE_SIZE; i++) {
