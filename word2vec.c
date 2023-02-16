@@ -848,7 +848,7 @@ int main(int argc, char **argv) {
   // The vocabulary table allocation
   vocab = (struct vocab_word *)calloc(vocab_max_size, sizeof(struct vocab_word));
   
-  //Mapping word strings to word entries using hash table
+  //Hash table allocation for mapping word strings to word entries
   vocab_hash = (int *)calloc(vocab_hash_size, sizeof(int));
   expTable = (real *)malloc((EXP_TABLE_SIZE + 1) * sizeof(real));
   for (i = 0; i < EXP_TABLE_SIZE; i++) {
