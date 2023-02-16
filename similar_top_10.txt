@@ -1,0 +1,5 @@
+The top-10 most similar words for query words: (From output.txt)
+
+“cat”: dog, puppy, cats, tabby, kitten, raccoon, feline, pup, rat, snake
+“she”: She, her, he, herself, He, hers, mother, husband, woman, him
+“like”: crazy, weird, silly, Like, strange, nice, unlike, boring, besides, queasy
