@@ -32,7 +32,7 @@ Parameters for training:
 	-binary <int>
 		Save the resulting vectors in binary moded; default is 0 (off)
 	-save-vocab <file>
-		The vocabulary will be saved to <file>
+		The vocabulary will be saved to <file> 
 	-read-vocab <file>
 		The vocabulary will be read from <file>, not constructed from the training data
 	-cbow <int>
